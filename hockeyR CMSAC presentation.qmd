@@ -1,0 +1,210 @@
+---
+title: "hockeyR"
+subtitle: "Easy access to detailed NHL play-by-play data"
+author: "Dan Morse"
+format:
+  revealjs:
+    theme: dark
+    incremental: true
+execute:
+  echo: true
+editor: visual
+title-slide-attributes: 
+  data-background-image: C:/Users/danmo/Documents/R/hockeyR/docs/logo.png
+  data-background-size: 15%
+  data-background-position: 2% 2%
+---
+
+## Intoduction
+
+#### Who I am
+
+-   Three-sport mathlete
+
+-   "Self-taught" R programmer
+
+-   **How does one get hockey data to analyze?**
+
+-   Evolving Hockey, Meta Hockey, Kaggle
+
+-   ![](nflscrapr_logo.jpg){width="50%"}
+
+## Accessing the NHL API
+
+| Endpoint  | Description                                      |
+|-----------|--------------------------------------------------|
+| /schedule | Get game schedule for a range of dates           |
+| /game     | Get box scores, summaries, and play-by-play data |
+| /draft    | Get data on any NHL Entry Draft                  |
+| /people   | Get player information                           |
+| /teams    | Get information on all 32 NHL teams              |
+
+: Documented by [Drew Hynes and Jon Ursenbach](https://github.com/erunion/sport-api-specifications/tree/master/nhl)
+
+## Scraping a game
+
+```{r load-libraries, message = FALSE, warning = FALSE, echo = FALSE}
+library(ggplot2)
+```
+
+To get the detailed, event-based play-by-play data for a single game, you first need to know the unique NHL game ID.
+
+### [2022]{style="color: #E69F00;"}[02]{style="color: #56B4E9;"}[0105]{style="color: #009E73;"}
+
+-   [Season ID (start year of the NHL season)]{style="color: #E69F00;"}
+
+-   [Game type (01 = preseason, 02 = regular, 03 = playoffs)]{style="color: #56B4E9;"}
+
+-   [Game number (0001 through total number of games)]{style="color: #009E73;"}
+
+-   Use `get_game_ids` function to find game IDs for a single day or a full season
+
+## Scraping a game
+
+```{r scraping-game}
+
+game_ids <- hockeyR::get_game_ids(season = 2023)
+
+pbp <- hockeyR::scrape_game(game_ids$game_id[105])
+
+head(pbp)
+```
+
+## The data
+
+```{r investigating-pbp}
+
+unique(pbp$event)
+```
+
+-   Each game contains 107 variables and around 700 rows. Each row corresponds to a single "event" that happened during the game.
+
+-   Shift change events have been added from the shift charts made available after the game. The helper function `get_game_shifts` turns shift reports into events, matching the rest of the play-by-play output
+
+## A shot plot
+
+Let's make a plot!
+
+```{r shot-plot-setup}
+shots <- dplyr::filter(pbp, event_type %in% c("SHOT","MISSED_SHOT","GOAL")) |>
+  dplyr::left_join(
+    hockeyR::team_logos_colors,
+    by = c("event_team" = "full_team_name")
+  )
+```
+
+```{r shot-plot, echo = FALSE}
+team_logos <- hockeyR::team_logos_colors |>
+    dplyr::filter(team_abbr == unique(pbp$home_abbreviation) | team_abbr == unique(pbp$away_abbreviation)) |>
+    # add in dummy variables to put logos on the ice
+    dplyr::mutate(x = ifelse(full_team_name == unique(pbp$home_name), 50, -50),
+           y = 0)
+
+transparent <- function(img) {
+    magick::image_fx(img, expression = "0.2*a", channel = "alpha")
+}
+
+sportyR::geom_hockey("nhl") +
+  ggimage::geom_image(
+      data = team_logos,
+      aes(x = x, y = y, image = team_logo_espn),
+      image_fun = transparent, size = 0.22, asp = 2.2
+    ) +
+  geom_point(
+      data = shots,
+      aes(x_fixed, y_fixed, color = event_team_abbr, shape = event),
+      size = 6, alpha = .6
+    ) +
+  scale_color_manual(
+    values = team_logos$team_color1
+  ) +
+  scale_shape_manual(values = c(19,17,15)) +
+  theme(
+    legend.direction = "horizontal",
+    legend.box = "horizontal",
+    legend.background = element_rect(fill = "transparent"),
+    legend.position = c(.5,0.06),
+    plot.title = element_text(hjust = .5, vjust = -4, size = 18)
+  ) +
+  labs(
+    color = NULL, shape = NULL,
+          title = glue::glue("{unique(shots$away_name)} ({unique(shots$away_final)}) @ {unique(shots$home_name)} ({unique(shots$home_final)})")
+    )
+```
+
+## Full season data
+
+-   hockeyR scrapes and updates a GitHub repository with new data every night so that users do not have to do the actual scraping
+
+-   To load a full season's play-by-play data, use the `load_pbp` function
+
+```{r load-pbp}
+pbp_all <- hockeyR::load_pbp(season = "2022-23")
+```
+
+-   From here, we can calculate individual player or team stats
+
+## Full season data
+
+```{r goal-leaders}
+leaders <- pbp_all |>
+  # get regular season stats, excluding shootout goals
+  dplyr::filter(period_type != "SHOOTOUT") |>
+  dplyr::group_by(scorer = event_player_1_name, id = event_player_1_id) |>
+  dplyr::summarize(
+    goals = sum(event_type == "GOAL"),
+    shot_attempts = sum(event_type %in% c("SHOT","MISSED_SHOT","BLOCKED_SHOT","GOAL")),
+    shot_percentage = round(goals/shot_attempts,3),
+    .groups = "drop"
+  ) |>
+  dplyr::arrange(-goals)
+
+head(leaders)
+```
+
+## Draft Classes
+
+```{r draft-class}
+draft <- hockeyR::get_draft_class(2022, player_details = TRUE)
+
+draft |> dplyr::select(pick_overall, full_team_name, player, height, weight, shoots_catches) |>
+  head()
+```
+
+-   We can use the /draft endpoint to get full information on any year's draft class using the `get_draft_class` function
+
+-   The argument `get_player_details` gets additional details, including height, weight, and amateur league
+
+## Rosters
+
+```{r get-rosters}
+rosters <- hockeyR::get_current_rosters()
+
+dplyr::glimpse(rosters)
+```
+
+-   Get the current official rosters for all 32 NHL teams
+
+## What's new
+
+-   hockeyR now includes a public expected goals model
+
+-   The hockeyR expected goals model is divided into two parts:
+
+    -   5-on-5 play
+
+    -   Special teams (including 4-on-4, 3-on-3)
+
+-   All unblocked shot events in both the data repositories and any games scraped by the user now have an expected goal value
+
+## Thanks for listening!
+
+### Any questions?
+
+[![](github.png){width="40"}](http://github.com/danmorse314) [github.com/danmorse314](https://github.com/danmorse314/hockeyR)
+
+[![](twitter.png){width="40"}](http://twitter.com/danmorse_) [twitter.com/danmorse\_](https://github.com/danmorse314/hockeyR)
+
+[![](linkedin.png){width="40"}](https://www.linkedin.com/in/daniel-a-morse/) [linkedin.com/in/daniel-a-morse](https://www.linkedin.com/in/daniel-a-morse/)
+
+![](images/logo.png){fig-align="center" width="210"}
